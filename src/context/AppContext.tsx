@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import {
   User,
   SchoolClass,
@@ -105,6 +105,29 @@ const STORAGE_KEYS = {
   CURRENT_USER: 'kiemtra_current_user_v1',
 };
 
+// Helper to synchronize a complete table (upserts current rows and deletes removed rows)
+async function syncTableExact(tableName: string, dbRows: Record<string, any>[]) {
+  const existingRes = await supabase.from(tableName).select('id');
+  if (existingRes.error) return existingRes;
+
+  const currentIds = new Set(dbRows.map((r) => r.id));
+  const idsToDelete = (existingRes.data || [])
+    .map((r: { id: string }) => r.id)
+    .filter((id: string) => !currentIds.has(id));
+
+  if (idsToDelete.length > 0) {
+    const delRes = await supabase.from(tableName).delete().in('id', idsToDelete);
+    if (delRes.error) return delRes;
+  }
+
+  if (dbRows.length > 0) {
+    const upRes = await supabase.from(tableName).upsert(dbRows, { onConflict: 'id' });
+    if (upRes.error) return upRes;
+  }
+
+  return { error: null };
+}
+
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
     try {
@@ -170,9 +193,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
 
   const [supabaseStatus, setSupabaseStatus] = useState<SupabaseConnectionStatus>('CONNECTING');
-  const [supabaseMessage, setSupabaseMessage] = useState<string>('Đang kiểm tra kết nối Supabase...');
+  const [supabaseMessage, setSupabaseMessage] = useState<string>('Đang tải dữ liệu từ Supabase...');
+  const isHydratedRef = useRef(false);
 
-  // Sync state to LocalStorage as local cache
+  // Sync currentUser to LocalStorage
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(currentUser));
@@ -181,7 +205,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [currentUser]);
 
+  // Only write data caches to localStorage AFTER initial Supabase fetch completes
   useEffect(() => {
+    if (!isHydratedRef.current) return;
     try {
       localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(users));
     } catch (e) {
@@ -190,6 +216,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [users]);
 
   useEffect(() => {
+    if (!isHydratedRef.current) return;
     try {
       localStorage.setItem(STORAGE_KEYS.CLASSES, JSON.stringify(classes));
     } catch (e) {
@@ -198,6 +225,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [classes]);
 
   useEffect(() => {
+    if (!isHydratedRef.current) return;
     try {
       localStorage.setItem(STORAGE_KEYS.QUESTIONS, JSON.stringify(questions));
     } catch (e) {
@@ -206,6 +234,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [questions]);
 
   useEffect(() => {
+    if (!isHydratedRef.current) return;
     try {
       localStorage.setItem(STORAGE_KEYS.EXAMS, JSON.stringify(exams));
     } catch (e) {
@@ -214,6 +243,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [exams]);
 
   useEffect(() => {
+    if (!isHydratedRef.current) return;
     try {
       localStorage.setItem(STORAGE_KEYS.ATTEMPTS, JSON.stringify(attempts));
     } catch (e) {
@@ -222,6 +252,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [attempts]);
 
   useEffect(() => {
+    if (!isHydratedRef.current) return;
     try {
       localStorage.setItem(STORAGE_KEYS.SUBJECTS, JSON.stringify(subjects));
     } catch (e) {
@@ -236,12 +267,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const syncAllToSupabase = useCallback(async (): Promise<{ success: boolean; message: string }> => {
     try {
       const [subRes, clsRes, usrRes, qRes, exRes, attRes] = await Promise.all([
-        supabase.from('subjects').upsert(subjects.map(toDbSubject)),
-        supabase.from('classes').upsert(classes.map(toDbClass)),
-        supabase.from('users').upsert(users.map(toDbUser)),
-        supabase.from('questions').upsert(questions.map(toDbQuestion)),
-        supabase.from('exams').upsert(exams.map(toDbExam)),
-        supabase.from('exam_attempts').upsert(attempts.map(toDbAttempt)),
+        syncTableExact('subjects', subjects.map(toDbSubject)),
+        syncTableExact('classes', classes.map(toDbClass)),
+        syncTableExact('users', users.map(toDbUser)),
+        syncTableExact('questions', questions.map(toDbQuestion)),
+        syncTableExact('exams', exams.map(toDbExam)),
+        syncTableExact('exam_attempts', attempts.map(toDbAttempt)),
       ]);
 
       const firstError =
@@ -295,6 +326,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         subRes.error || clsRes.error || usrRes.error || qRes.error || exRes.error || attRes.error;
 
       if (firstError) {
+        isHydratedRef.current = true;
         const isMissingTable =
           firstError.code === '42P01' ||
           firstError.code === 'PGRST205' ||
@@ -315,48 +347,73 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return { success: false, message: firstError.message };
       }
 
-      // If tables exist on Supabase: load non-empty tables or seed empty tables with current local data
-      if (subRes.data && subRes.data.length > 0) {
-        setSubjects(subRes.data.map(fromDbSubject));
+      const subRows = subRes.data || [];
+      const clsRows = clsRes.data || [];
+      const usrRows = usrRes.data || [];
+      const qRows = qRes.data || [];
+      const exRows = exRes.data || [];
+      const attRows = attRes.data || [];
+
+      const totalCloudRows =
+        subRows.length +
+        clsRows.length +
+        usrRows.length +
+        qRows.length +
+        exRows.length +
+        attRows.length;
+
+      // Only seed initial sample data if the ENTIRE Supabase database is 100% empty (0 rows across all 6 tables)
+      if (totalCloudRows === 0) {
+        await Promise.all([
+          supabase.from('subjects').upsert(INITIAL_SUBJECTS.map(toDbSubject)),
+          supabase.from('classes').upsert(INITIAL_CLASSES.map(toDbClass)),
+          supabase.from('users').upsert(INITIAL_USERS.map(toDbUser)),
+          supabase.from('questions').upsert(INITIAL_QUESTIONS.map(toDbQuestion)),
+          supabase.from('exams').upsert(INITIAL_EXAMS.map(toDbExam)),
+          supabase.from('exam_attempts').upsert(INITIAL_ATTEMPTS.map(toDbAttempt)),
+        ]);
+        setSubjects(INITIAL_SUBJECTS);
+        setClasses(INITIAL_CLASSES);
+        setUsers(INITIAL_USERS);
+        setQuestions(INITIAL_QUESTIONS);
+        setExams(INITIAL_EXAMS);
+        setAttempts(INITIAL_ATTEMPTS);
       } else {
-        await supabase.from('subjects').upsert(subjects.map(toDbSubject));
+        // Use Supabase as the exact single source of truth (even if user deleted all rows in a specific table!)
+        const loadedSubjects = subRows.map(fromDbSubject);
+        const loadedClasses = clsRows.map(fromDbClass);
+        const loadedUsers = usrRows.map(fromDbUser);
+        const loadedQuestions = qRows.map(fromDbQuestion);
+        const loadedExams = exRows.map(fromDbExam);
+        const loadedAttempts = attRows.map(fromDbAttempt);
+
+        setSubjects(loadedSubjects);
+        setClasses(loadedClasses);
+        setUsers(loadedUsers);
+        setQuestions(loadedQuestions);
+        setExams(loadedExams);
+        setAttempts(loadedAttempts);
+
+        // Immediately overwrite localStorage with the exact cloud data
+        try {
+          localStorage.setItem(STORAGE_KEYS.SUBJECTS, JSON.stringify(loadedSubjects));
+          localStorage.setItem(STORAGE_KEYS.CLASSES, JSON.stringify(loadedClasses));
+          localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(loadedUsers));
+          localStorage.setItem(STORAGE_KEYS.QUESTIONS, JSON.stringify(loadedQuestions));
+          localStorage.setItem(STORAGE_KEYS.EXAMS, JSON.stringify(loadedExams));
+          localStorage.setItem(STORAGE_KEYS.ATTEMPTS, JSON.stringify(loadedAttempts));
+        } catch (e) {
+          console.error(e);
+        }
       }
 
-      if (clsRes.data && clsRes.data.length > 0) {
-        setClasses(clsRes.data.map(fromDbClass));
-      } else {
-        await supabase.from('classes').upsert(classes.map(toDbClass));
-      }
-
-      if (usrRes.data && usrRes.data.length > 0) {
-        setUsers(usrRes.data.map(fromDbUser));
-      } else {
-        await supabase.from('users').upsert(users.map(toDbUser));
-      }
-
-      if (qRes.data && qRes.data.length > 0) {
-        setQuestions(qRes.data.map(fromDbQuestion));
-      } else {
-        await supabase.from('questions').upsert(questions.map(toDbQuestion));
-      }
-
-      if (exRes.data && exRes.data.length > 0) {
-        setExams(exRes.data.map(fromDbExam));
-      } else {
-        await supabase.from('exams').upsert(exams.map(toDbExam));
-      }
-
-      if (attRes.data && attRes.data.length > 0) {
-        setAttempts(attRes.data.map(fromDbAttempt));
-      } else if (attempts.length > 0) {
-        await supabase.from('exam_attempts').upsert(attempts.map(toDbAttempt));
-      }
-
+      isHydratedRef.current = true;
       setSupabaseStatus('CONNECTED');
-      const okMsg = 'Đã kết nối và đồng bộ dữ liệu trực tiếp với Supabase.';
+      const okMsg = `Đã đồng bộ trực tiếp từ Supabase (${qRows.length} câu hỏi, ${exRows.length} đề thi, ${usrRows.length} tài khoản, ${clsRows.length} lớp).`;
       setSupabaseMessage(okMsg);
       return { success: true, message: okMsg };
     } catch (err: any) {
+      isHydratedRef.current = true;
       setSupabaseStatus('ERROR');
       const errMsg = err?.message || 'Lỗi kết nối Supabase.';
       setSupabaseMessage(errMsg);
@@ -364,9 +421,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, []);
 
-  // Initial load from Supabase on mount
+  // Initial load from Supabase on mount + re-sync on window focus
   useEffect(() => {
     refreshFromSupabase();
+
+    const handleFocus = () => {
+      refreshFromSupabase();
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
   }, [refreshFromSupabase]);
 
   const login = (username: string, password: string) => {
@@ -402,6 +465,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCurrentUser(null);
   };
 
+  // ==========================================================================
+  // CRUD OPERATIONS (STATE + SUPABASE PERSISTENCE)
+  // ==========================================================================
+
   // Subjects
   const addSubject = (newSub: Omit<SubjectItem, 'id' | 'createdAt'>): SubjectItem => {
     const id = `sub_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
@@ -411,24 +478,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       createdAt: new Date().toISOString(),
     };
     setSubjects((prev) => [...prev, created]);
-    supabase.from('subjects').upsert(toDbSubject(created)).then();
+    supabase
+      .from('subjects')
+      .upsert(toDbSubject(created), { onConflict: 'id' })
+      .then(({ error }) => {
+        if (error) console.error('Supabase addSubject error:', error);
+      });
     return created;
   };
 
   const updateSubject = (id: string, updated: Partial<SubjectItem>) => {
-    setSubjects((prev) =>
-      prev.map((s) => {
-        if (s.id !== id) return s;
-        const next = { ...s, ...updated };
-        supabase.from('subjects').upsert(toDbSubject(next)).then();
-        return next;
-      })
-    );
+    const existing = subjects.find((s) => s.id === id);
+    if (!existing) return;
+    const next: SubjectItem = { ...existing, ...updated };
+    setSubjects((prev) => prev.map((s) => (s.id === id ? next : s)));
+    supabase
+      .from('subjects')
+      .upsert(toDbSubject(next), { onConflict: 'id' })
+      .then(({ error }) => {
+        if (error) console.error('Supabase updateSubject error:', error);
+      });
   };
 
   const deleteSubject = (id: string) => {
     setSubjects((prev) => prev.filter((s) => s.id !== id));
-    supabase.from('subjects').delete().eq('id', id).then();
+    supabase
+      .from('subjects')
+      .delete()
+      .eq('id', id)
+      .then(({ error }) => {
+        if (error) console.error('Supabase deleteSubject error:', error);
+      });
   };
 
   // Questions
@@ -436,24 +516,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const id = `q_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
     const question: Question = { ...newQ, id, createdAt: new Date().toISOString() };
     setQuestions((prev) => [question, ...prev]);
-    supabase.from('questions').upsert(toDbQuestion(question)).then();
+    supabase
+      .from('questions')
+      .upsert(toDbQuestion(question), { onConflict: 'id' })
+      .then(({ error }) => {
+        if (error) console.error('Supabase addQuestion error:', error);
+      });
     return question;
   };
 
   const updateQuestion = (id: string, updated: Partial<Question>) => {
-    setQuestions((prev) =>
-      prev.map((q) => {
-        if (q.id !== id) return q;
-        const next = { ...q, ...updated };
-        supabase.from('questions').upsert(toDbQuestion(next)).then();
-        return next;
-      })
-    );
+    const existing = questions.find((q) => q.id === id);
+    if (!existing) return;
+    const next: Question = { ...existing, ...updated };
+    setQuestions((prev) => prev.map((q) => (q.id === id ? next : q)));
+    supabase
+      .from('questions')
+      .upsert(toDbQuestion(next), { onConflict: 'id' })
+      .then(({ error }) => {
+        if (error) console.error('Supabase updateQuestion error:', error);
+      });
   };
 
   const deleteQuestion = (id: string) => {
     setQuestions((prev) => prev.filter((q) => q.id !== id));
-    supabase.from('questions').delete().eq('id', id).then();
+    supabase
+      .from('questions')
+      .delete()
+      .eq('id', id)
+      .then(({ error }) => {
+        if (error) console.error('Supabase deleteQuestion error:', error);
+      });
   };
 
   const duplicateQuestion = (id: string) => {
@@ -466,13 +559,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       createdAt: new Date().toISOString(),
     };
     setQuestions((prev) => [duplicated, ...prev]);
-    supabase.from('questions').upsert(toDbQuestion(duplicated)).then();
+    supabase
+      .from('questions')
+      .upsert(toDbQuestion(duplicated), { onConflict: 'id' })
+      .then(({ error }) => {
+        if (error) console.error('Supabase duplicateQuestion error:', error);
+      });
   };
 
   const importQuestions = (newQuestions: Question[]): number => {
     setQuestions((prev) => [...newQuestions, ...prev]);
     if (newQuestions.length > 0) {
-      supabase.from('questions').upsert(newQuestions.map(toDbQuestion)).then();
+      supabase
+        .from('questions')
+        .upsert(newQuestions.map(toDbQuestion), { onConflict: 'id' })
+        .then(({ error }) => {
+          if (error) console.error('Supabase importQuestions error:', error);
+        });
     }
     return newQuestions.length;
   };
@@ -486,24 +589,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       createdAt: new Date().toISOString(),
     };
     setExams((prev) => [newExam, ...prev]);
-    supabase.from('exams').upsert(toDbExam(newExam)).then();
+    supabase
+      .from('exams')
+      .upsert(toDbExam(newExam), { onConflict: 'id' })
+      .then(({ error }) => {
+        if (error) console.error('Supabase createExam error:', error);
+      });
     return newExam;
   };
 
   const updateExam = (id: string, updated: Partial<Exam>) => {
-    setExams((prev) =>
-      prev.map((e) => {
-        if (e.id !== id) return e;
-        const next = { ...e, ...updated };
-        supabase.from('exams').upsert(toDbExam(next)).then();
-        return next;
-      })
-    );
+    const existing = exams.find((e) => e.id === id);
+    if (!existing) return;
+    const next: Exam = { ...existing, ...updated };
+    setExams((prev) => prev.map((e) => (e.id === id ? next : e)));
+    supabase
+      .from('exams')
+      .upsert(toDbExam(next), { onConflict: 'id' })
+      .then(({ error }) => {
+        if (error) console.error('Supabase updateExam error:', error);
+      });
   };
 
   const deleteExam = (id: string) => {
     setExams((prev) => prev.filter((e) => e.id !== id));
-    supabase.from('exams').delete().eq('id', id).then();
+    supabase
+      .from('exams')
+      .delete()
+      .eq('id', id)
+      .then(({ error }) => {
+        if (error) console.error('Supabase deleteExam error:', error);
+      });
   };
 
   const duplicateExam = (id: string) => {
@@ -517,86 +633,124 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       createdAt: new Date().toISOString(),
     };
     setExams((prev) => [dup, ...prev]);
-    supabase.from('exams').upsert(toDbExam(dup)).then();
+    supabase
+      .from('exams')
+      .upsert(toDbExam(dup), { onConflict: 'id' })
+      .then(({ error }) => {
+        if (error) console.error('Supabase duplicateExam error:', error);
+      });
   };
 
   const toggleExamStatus = (id: string, status?: ExamStatus) => {
-    setExams((prev) =>
-      prev.map((e) => {
-        if (e.id !== id) return e;
-        const newStatus = status ? status : e.status === 'OPEN' ? 'CLOSED' : 'OPEN';
-        const next = { ...e, status: newStatus };
-        supabase.from('exams').upsert(toDbExam(next)).then();
-        return next;
-      })
-    );
+    const existing = exams.find((e) => e.id === id);
+    if (!existing) return;
+    const newStatus: ExamStatus = status ? status : existing.status === 'OPEN' ? 'CLOSED' : 'OPEN';
+    const next: Exam = { ...existing, status: newStatus };
+    setExams((prev) => prev.map((e) => (e.id === id ? next : e)));
+    supabase
+      .from('exams')
+      .upsert(toDbExam(next), { onConflict: 'id' })
+      .then(({ error }) => {
+        if (error) console.error('Supabase toggleExamStatus error:', error);
+      });
   };
 
   // Classes
   const addClass = (cls: SchoolClass) => {
     setClasses((prev) => [...prev, cls]);
-    supabase.from('classes').upsert(toDbClass(cls)).then();
+    supabase
+      .from('classes')
+      .upsert(toDbClass(cls), { onConflict: 'id' })
+      .then(({ error }) => {
+        if (error) console.error('Supabase addClass error:', error);
+      });
   };
 
   const updateClass = (id: string, updated: Partial<SchoolClass>) => {
-    setClasses((prev) =>
-      prev.map((c) => {
-        if (c.id !== id) return c;
-        const next = { ...c, ...updated };
-        supabase.from('classes').upsert(toDbClass(next)).then();
-        return next;
-      })
-    );
+    const existing = classes.find((c) => c.id === id);
+    if (!existing) return;
+    const next: SchoolClass = { ...existing, ...updated };
+    setClasses((prev) => prev.map((c) => (c.id === id ? next : c)));
+    supabase
+      .from('classes')
+      .upsert(toDbClass(next), { onConflict: 'id' })
+      .then(({ error }) => {
+        if (error) console.error('Supabase updateClass error:', error);
+      });
   };
 
   const deleteClass = (id: string) => {
     setClasses((prev) => prev.filter((c) => c.id !== id));
-    supabase.from('classes').delete().eq('id', id).then();
+    supabase
+      .from('classes')
+      .delete()
+      .eq('id', id)
+      .then(({ error }) => {
+        if (error) console.error('Supabase deleteClass error:', error);
+      });
   };
 
   // Users
   const addUser = (user: User) => {
     setUsers((prev) => [...prev, user]);
-    supabase.from('users').upsert(toDbUser(user)).then();
+    supabase
+      .from('users')
+      .upsert(toDbUser(user), { onConflict: 'id' })
+      .then(({ error }) => {
+        if (error) console.error('Supabase addUser error:', error);
+      });
   };
 
   const updateUser = (id: string, updated: Partial<User>) => {
-    setUsers((prev) =>
-      prev.map((u) => {
-        if (u.id !== id) return u;
-        const next = { ...u, ...updated };
-        supabase.from('users').upsert(toDbUser(next)).then();
-        return next;
-      })
-    );
+    const existing = users.find((u) => u.id === id);
+    if (!existing) return;
+    const next: User = { ...existing, ...updated };
+    setUsers((prev) => prev.map((u) => (u.id === id ? next : u)));
+    supabase
+      .from('users')
+      .upsert(toDbUser(next), { onConflict: 'id' })
+      .then(({ error }) => {
+        if (error) console.error('Supabase updateUser error:', error);
+      });
   };
 
   const deleteUser = (id: string) => {
     setUsers((prev) => prev.filter((u) => u.id !== id));
-    supabase.from('users').delete().eq('id', id).then();
+    supabase
+      .from('users')
+      .delete()
+      .eq('id', id)
+      .then(({ error }) => {
+        if (error) console.error('Supabase deleteUser error:', error);
+      });
   };
 
   const importUsers = (newUsers: User[]): number => {
-    setUsers((prev) => {
-      const existingUsernames = new Set(prev.map((u) => u.username.toLowerCase()));
-      const filtered = newUsers.filter((u) => !existingUsernames.has(u.username.toLowerCase()));
-      if (filtered.length > 0) {
-        supabase.from('users').upsert(filtered.map(toDbUser)).then();
-      }
-      return [...prev, ...filtered];
-    });
-    return newUsers.length;
+    const existingUsernames = new Set(users.map((u) => u.username.toLowerCase()));
+    const filtered = newUsers.filter((u) => !existingUsernames.has(u.username.toLowerCase()));
+    if (filtered.length > 0) {
+      setUsers((prev) => [...prev, ...filtered]);
+      supabase
+        .from('users')
+        .upsert(filtered.map(toDbUser), { onConflict: 'id' })
+        .then(({ error }) => {
+          if (error) console.error('Supabase importUsers error:', error);
+        });
+    }
+    return filtered.length;
   };
 
   const resetUserPassword = (userId: string, newPassword = '123456') => {
-    setUsers((prev) =>
-      prev.map((u) => {
-        if (u.id !== userId) return u;
-        const next = { ...u, passwordHash: newPassword };
-        supabase.from('users').upsert(toDbUser(next)).then();
-        return next;
-      })
-    );
+    const existing = users.find((u) => u.id === userId);
+    if (!existing) return;
+    const next: User = { ...existing, passwordHash: newPassword };
+    setUsers((prev) => prev.map((u) => (u.id === userId ? next : u)));
+    supabase
+      .from('users')
+      .upsert(toDbUser(next), { onConflict: 'id' })
+      .then(({ error }) => {
+        if (error) console.error('Supabase resetUserPassword error:', error);
+      });
   };
 
   // Exam Attempt Management
@@ -631,7 +785,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     setAttempts((prev) => [newAttempt, ...prev]);
-    supabase.from('exam_attempts').upsert(toDbAttempt(newAttempt)).then();
+    supabase
+      .from('exam_attempts')
+      .upsert(toDbAttempt(newAttempt), { onConflict: 'id' })
+      .then(({ error }) => {
+        if (error) console.error('Supabase startExamAttempt error:', error);
+      });
     return newAttempt;
   };
 
@@ -640,14 +799,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     answers: Record<string, StudentAnswer>,
     timeSpentSeconds: number
   ) => {
-    setAttempts((prev) =>
-      prev.map((a) => {
-        if (a.id !== attemptId) return a;
-        const next = { ...a, answers, timeSpentSeconds };
-        supabase.from('exam_attempts').upsert(toDbAttempt(next)).then();
-        return next;
-      })
-    );
+    const existing = attempts.find((a) => a.id === attemptId);
+    if (!existing) return;
+    const next: ExamAttempt = { ...existing, answers, timeSpentSeconds };
+    setAttempts((prev) => prev.map((a) => (a.id === attemptId ? next : a)));
+    supabase
+      .from('exam_attempts')
+      .upsert(toDbAttempt(next), { onConflict: 'id' })
+      .then(({ error }) => {
+        if (error) console.error('Supabase saveAttemptProgress error:', error);
+      });
   };
 
   const submitExamAttempt = (
@@ -700,7 +861,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     setAttempts((prev) => prev.map((a) => (a.id === attemptId ? updatedAttempt : a)));
-    supabase.from('exam_attempts').upsert(toDbAttempt(updatedAttempt)).then();
+    supabase
+      .from('exam_attempts')
+      .upsert(toDbAttempt(updatedAttempt), { onConflict: 'id' })
+      .then(({ error }) => {
+        if (error) console.error('Supabase submitExamAttempt error:', error);
+      });
     return updatedAttempt;
   };
 
@@ -719,20 +885,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setExams(INITIAL_EXAMS);
     setAttempts(INITIAL_ATTEMPTS);
     setSubjects(INITIAL_SUBJECTS);
-    localStorage.removeItem(STORAGE_KEYS.USERS);
-    localStorage.removeItem(STORAGE_KEYS.CLASSES);
-    localStorage.removeItem(STORAGE_KEYS.QUESTIONS);
-    localStorage.removeItem(STORAGE_KEYS.EXAMS);
-    localStorage.removeItem(STORAGE_KEYS.ATTEMPTS);
-    localStorage.removeItem(STORAGE_KEYS.SUBJECTS);
 
     Promise.all([
-      supabase.from('subjects').upsert(INITIAL_SUBJECTS.map(toDbSubject)),
-      supabase.from('classes').upsert(INITIAL_CLASSES.map(toDbClass)),
-      supabase.from('users').upsert(INITIAL_USERS.map(toDbUser)),
-      supabase.from('questions').upsert(INITIAL_QUESTIONS.map(toDbQuestion)),
-      supabase.from('exams').upsert(INITIAL_EXAMS.map(toDbExam)),
-      supabase.from('exam_attempts').upsert(INITIAL_ATTEMPTS.map(toDbAttempt)),
+      syncTableExact('subjects', INITIAL_SUBJECTS.map(toDbSubject)),
+      syncTableExact('classes', INITIAL_CLASSES.map(toDbClass)),
+      syncTableExact('users', INITIAL_USERS.map(toDbUser)),
+      syncTableExact('questions', INITIAL_QUESTIONS.map(toDbQuestion)),
+      syncTableExact('exams', INITIAL_EXAMS.map(toDbExam)),
+      syncTableExact('exam_attempts', INITIAL_ATTEMPTS.map(toDbAttempt)),
     ]).then();
   };
 

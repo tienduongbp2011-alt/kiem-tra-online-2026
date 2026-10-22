@@ -425,13 +425,9 @@ export const QuestionBankView: React.FC = () => {
                     <Copy className="w-4 h-4" />
                   </button>
                   <button
-                    onClick={() => {
-                      if (confirm('Bạn có chắc muốn xóa câu hỏi này khỏi ngân hàng?')) {
-                        deleteQuestion(q.id);
-                      }
-                    }}
+                    onClick={() => deleteQuestion(q.id)}
                     title="Xóa câu hỏi"
-                    className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg transition-colors"
+                    className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>

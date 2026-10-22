@@ -112,9 +112,7 @@ export const TeacherManagement: React.FC = () => {
   };
 
   const handleSwitchAccount = (teacher: User) => {
-    if (confirm(`Chuyển phiên làm việc sang tài khoản của ${teacher.fullName} (Môn ${teacher.subject || 'Toàn trường'})?`)) {
-      login(teacher.username, teacher.passwordHash);
-    }
+    login(teacher.username, teacher.passwordHash);
   };
 
   return (
@@ -254,13 +252,12 @@ export const TeacherManagement: React.FC = () => {
                       {/* Reset password */}
                       <button
                         onClick={() => {
-                          if (confirm(`Đặt lại mật khẩu cho "${t.fullName}" về mặc định "gv123456"?`)) {
-                            resetUserPassword(t.id, 'gv123456');
-                            alert('Đã đặt lại mật khẩu về: gv123456');
-                          }
+                          resetUserPassword(t.id, 'gv123456');
+                          setNotification(`Đã đặt lại mật khẩu của "${t.fullName}" về: gv123456`);
+                          setTimeout(() => setNotification(null), 3000);
                         }}
                         title="Reset mật khẩu về gv123456"
-                        className="p-1.5 rounded-lg text-amber-700 hover:bg-amber-50 transition-colors"
+                        className="p-1.5 rounded-lg text-amber-700 hover:bg-amber-50 transition-colors cursor-pointer"
                       >
                         <KeyRound className="w-4 h-4" />
                       </button>
@@ -269,7 +266,7 @@ export const TeacherManagement: React.FC = () => {
                       <button
                         onClick={() => handleOpenEdit(t)}
                         title="Chỉnh sửa thông tin"
-                        className="p-1.5 rounded-lg text-slate-600 hover:bg-slate-100 transition-colors"
+                        className="p-1.5 rounded-lg text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
                       >
                         <Edit2 className="w-4 h-4" />
                       </button>
@@ -277,12 +274,12 @@ export const TeacherManagement: React.FC = () => {
                       {/* Delete */}
                       <button
                         onClick={() => {
-                          if (confirm(`Bạn có chắc chắn muốn xóa tài khoản "${t.fullName}"?`)) {
-                            deleteUser(t.id);
-                          }
+                          deleteUser(t.id);
+                          setNotification(`Đã xóa tài khoản "${t.fullName}".`);
+                          setTimeout(() => setNotification(null), 3000);
                         }}
                         title="Xóa giáo viên"
-                        className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50 transition-colors"
+                        className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>

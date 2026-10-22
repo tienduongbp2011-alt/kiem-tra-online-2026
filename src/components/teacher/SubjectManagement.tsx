@@ -104,17 +104,9 @@ export const SubjectManagement: React.FC<SubjectManagementProps> = ({
   };
 
   const handleDelete = (subject: SubjectItem) => {
-    const examCount = exams.filter((e) => e.subject === subject.name).length;
-    const qCount = questions.filter((q) => q.subject === subject.name).length;
-
-    let warning = `Bạn có chắc muốn xóa môn "${subject.name}"?`;
-    if (examCount > 0 || qCount > 0) {
-      warning += `\nLưu ý: Môn này đang có ${qCount} câu hỏi và ${examCount} đề thi trong hệ thống.`;
-    }
-
-    if (confirm(warning)) {
-      deleteSubject(subject.id);
-    }
+    deleteSubject(subject.id);
+    setSuccessMessage(`Đã xóa môn "${subject.name}" khỏi hệ thống.`);
+    setTimeout(() => setSuccessMessage(null), 3000);
   };
 
   return (

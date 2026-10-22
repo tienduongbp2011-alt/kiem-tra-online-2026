@@ -126,12 +126,8 @@ export const ClassManagement: React.FC = () => {
                       <Edit2 className="w-4 h-4" />
                     </button>
                     <button
-                      onClick={() => {
-                        if (confirm(`Bạn có chắc muốn xóa lớp ${cls.name}?`)) {
-                          deleteClass(cls.id);
-                        }
-                      }}
-                      className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg transition-colors"
+                      onClick={() => deleteClass(cls.id)}
+                      className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
                       title="Xóa lớp"
                     >
                       <Trash2 className="w-4 h-4" />

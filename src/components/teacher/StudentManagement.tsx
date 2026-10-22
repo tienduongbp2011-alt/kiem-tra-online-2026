@@ -296,13 +296,10 @@ export const StudentManagement: React.FC = () => {
                       {/* Reset Password as required */}
                       <button
                         onClick={() => {
-                          if (confirm(`Đặt lại mật khẩu cho học sinh "${s.fullName}" về mặc định "123456"?`)) {
-                            resetUserPassword(s.id, '123456');
-                            alert('Đã đặt lại mật khẩu về: 123456');
-                          }
+                          resetUserPassword(s.id, '123456');
                         }}
                         title="Reset mật khẩu về 123456"
-                        className="p-1.5 rounded-lg text-amber-700 hover:bg-amber-50 transition-colors"
+                        className="p-1.5 rounded-lg text-amber-700 hover:bg-amber-50 transition-colors cursor-pointer"
                       >
                         <KeyRound className="w-4 h-4" />
                       </button>
@@ -311,20 +308,16 @@ export const StudentManagement: React.FC = () => {
                       <button
                         onClick={() => handleOpenEdit(s)}
                         title="Chỉnh sửa thông tin"
-                        className="p-1.5 rounded-lg text-slate-600 hover:bg-slate-100 transition-colors"
+                        className="p-1.5 rounded-lg text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
                       >
                         <Edit2 className="w-4 h-4" />
                       </button>
 
                       {/* Delete as required */}
                       <button
-                        onClick={() => {
-                          if (confirm(`Xóa học sinh "${s.fullName}" khỏi hệ thống?`)) {
-                            deleteUser(s.id);
-                          }
-                        }}
+                        onClick={() => deleteUser(s.id)}
                         title="Xóa học sinh"
-                        className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50 transition-colors"
+                        className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
